@@ -17,6 +17,7 @@ from mimic3models import common_utils
 
 import tensorflow as tf
 from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger
+from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras import DPKerasAdamOptimizer
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -70,57 +71,57 @@ args_dict['header'] = discretizer_header
 args_dict['task'] = 'ihm'
 args_dict['target_repl'] = target_repl
 
-# Build the model
-print("==> using model {}".format(args.network))
-model_module = imp.load_source(os.path.basename(args.network), args.network)
-model = model_module.Network(**args_dict)
-suffix = ".bs{}{}{}.ts{}{}{}".format(args.batch_size,
-                                   ".L1{}".format(args.l1) if args.l1 > 0 else "",
-                                   ".L2{}".format(args.l2) if args.l2 > 0 else "",
-                                   args.timestep,
-                                   ".trc{}".format(args.target_repl_coef) if args.target_repl_coef > 0 else "",
-                                   ".dp" if args.dp else "")
-model.final_name = args.prefix + model.say_name() + suffix
-print("==> model.final_name:", model.final_name)
-
-
-# Compile the model
-print("==> compiling the model")
-if args.dp:
-    from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras import DPKerasAdamOptimizer
-    optimizer = DPKerasAdamOptimizer(
-        l2_norm_clip=args.l2_norm_clip,
-        noise_multiplier=args.noise_multiplier,
-        num_microbatches=args.batch_size,
-        learning_rate=args.lr,
-        beta_1=args.beta_1
-    )
-else:
-    optimizer = tf.keras.optimizers.Adam(beta_1=args.beta_1, learning_rate=args.lr)
-
-# NOTE: one can use binary_crossentropy even for (B, T, C) shape.
-#       It will calculate binary_crossentropies for each class
-#       and then take the mean over axis=-1. Tre results is (B, T).
-if target_repl:
-    loss = ['binary_crossentropy'] * 2
-    loss_weights = [1 - args.target_repl_coef, args.target_repl_coef]
-else:
-    if args.dp:
-        loss = tf.keras.losses.BinaryCrossentropy(reduction=tf.losses.Reduction.NONE)
-    else:
-        loss = 'binary_crossentropy'
-    loss_weights = None
-
-model.compile(optimizer=optimizer,
-              loss=loss,
-              loss_weights=loss_weights)
-model.summary()
-
 # Load model weights
 n_trained_chunks = 0
 if args.load_state != "":
-    model.load_weights(args.load_state)
+    model = tf.keras.models.load_model(args.load_state, compile=False if args.dp else True)
     n_trained_chunks = int(re.match(".*epoch([0-9]+).*", args.load_state).group(1))
+
+else:
+    # Build the model
+    print("==> using model {}".format(args.network))
+    model_module = imp.load_source(os.path.basename(args.network), args.network)
+    model = model_module.Network(**args_dict)
+    suffix = ".bs{}{}{}.ts{}{}{}".format(args.batch_size,
+                                       ".L1{}".format(args.l1) if args.l1 > 0 else "",
+                                       ".L2{}".format(args.l2) if args.l2 > 0 else "",
+                                       args.timestep,
+                                       ".trc{}".format(args.target_repl_coef) if args.target_repl_coef > 0 else "",
+                                       ".dp" if args.dp else "")
+    model.final_name = args.prefix + model.say_name() + suffix
+    print("==> model.final_name:", model.final_name)
+
+
+    # Compile the model
+    print("==> compiling the model")
+    if args.dp:
+        optimizer = DPKerasAdamOptimizer(
+            l2_norm_clip=args.l2_norm_clip,
+            noise_multiplier=args.noise_multiplier,
+            num_microbatches=args.batch_size,
+            learning_rate=args.lr,
+            beta_1=args.beta_1
+        )
+    else:
+        optimizer = tf.keras.optimizers.Adam(beta_1=args.beta_1, learning_rate=args.lr)
+
+    # NOTE: one can use binary_crossentropy even for (B, T, C) shape.
+    #       It will calculate binary_crossentropies for each class
+    #       and then take the mean over axis=-1. Tre results is (B, T).
+    if target_repl:
+        loss = ['binary_crossentropy'] * 2
+        loss_weights = [1 - args.target_repl_coef, args.target_repl_coef]
+    else:
+        if args.dp:
+            loss = tf.keras.losses.BinaryCrossentropy(reduction=tf.losses.Reduction.NONE)
+        else:
+            loss = 'binary_crossentropy'
+        loss_weights = None
+
+    model.compile(optimizer=optimizer,
+                  loss=loss,
+                  loss_weights=loss_weights)
+    model.summary()
 
 
 # Read data
@@ -149,7 +150,6 @@ if args.mode == 'train':
     metrics_callback = keras_utils.InHospitalMortalityMetrics(train_data=train_raw,
                                                               val_data=val_raw,
                                                               target_repl=(args.target_repl_coef > 0),
-                                                              training_size=len(train_raw[0]),
                                                               delta=1e-7,
                                                               batch_size=args.batch_size,
                                                               verbose=args.verbose,
