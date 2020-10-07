@@ -33,8 +33,9 @@ def compute_epsilon(steps, noise_multiplier, batch_size, input_size, delta):
 
 
 class DecompensationMetrics(tf.keras.callbacks.Callback):
-    def __init__(self, train_data_gen, val_data_gen, deep_supervision,
-                 batch_size=32, early_stopping=True, verbose=2):
+    def __init__(self, train_data_gen, val_data_gen, deep_supervision, delta,
+                 batch_size=32, early_stopping=True, verbose=2,
+                 dp=False, noise_multiplier=0.0):
         super(DecompensationMetrics, self).__init__()
         self.train_data_gen = train_data_gen
         self.val_data_gen = val_data_gen
@@ -44,6 +45,9 @@ class DecompensationMetrics(tf.keras.callbacks.Callback):
         self.verbose = verbose
         self.train_history = []
         self.val_history = []
+        self.delta = delta
+        self.dp = dp
+        self.noise_multiplier = noise_multiplier
 
     def calc_metrics(self, data_gen, history, dataset, logs):
         y_true = []
@@ -70,6 +74,17 @@ class DecompensationMetrics(tf.keras.callbacks.Callback):
         history.append(ret)
 
     def on_epoch_end(self, epoch, logs={}):
+        if self.dp:
+            epsilon = compute_epsilon(epoch * self.train_data.steps,
+                                      self.noise_multiplier,
+                                      self.batch_size,
+                                      self.train_data.steps,
+                                      self.delta)
+            print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
+            logs['epsilon'] = epsilon
+            if epsilon > 10:
+                self.model.stop_training = True
+
         print("\n==>predicting on train")
         self.calc_metrics(self.train_data_gen, self.train_history, 'train', logs)
         print("\n==>predicting on validation")
@@ -83,7 +98,7 @@ class DecompensationMetrics(tf.keras.callbacks.Callback):
 
 
 class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
-    def __init__(self, train_data, val_data, target_repl, training_size, delta,
+    def __init__(self, train_data, val_data, target_repl, delta,
                  batch_size=32, early_stopping=True, verbose=2,
                  dp=False, noise_multiplier=0.0):
         super(InHospitalMortalityMetrics, self).__init__()
@@ -97,7 +112,6 @@ class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
         self.val_history = []
         self.dp = dp
         self.noise_multiplier = noise_multiplier
-        self.training_size = training_size
         self.delta = delta
 
     def calc_metrics(self, data, history, dataset, logs):
@@ -127,10 +141,10 @@ class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs={}):
         if self.dp:
-            epsilon = compute_epsilon(epoch * self.training_size // self.batch_size,
+            epsilon = compute_epsilon(epoch * len(self.train_data[0]) // self.batch_size,
                                       self.noise_multiplier,
                                       self.batch_size,
-                                      self.training_size,
+                                      self.train_data[0],
                                       self.delta)
             print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
             logs['epsilon'] = epsilon
