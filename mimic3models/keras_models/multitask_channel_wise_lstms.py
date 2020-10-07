@@ -1,11 +1,9 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-from keras.models import Model
-from keras.layers import Input, Dense, LSTM, Masking, Dropout
-from keras.layers.wrappers import TimeDistributed
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, LSTM, Masking, Dropout, TimeDistributed, Concatenate, Multiply
 from mimic3models.keras_utils import Slice, GetTimestep, LastTimestep, ExtendMask
-from keras.layers.merge import Concatenate, Multiply
 
 
 class Network(Model):

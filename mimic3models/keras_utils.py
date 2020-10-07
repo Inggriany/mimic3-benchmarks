@@ -4,19 +4,35 @@ from __future__ import print_function
 import numpy as np
 from mimic3models import metrics
 
-import keras
-import keras.backend as K
+import tensorflow.keras.backend as K
 
 if K.backend() == 'tensorflow':
     import tensorflow as tf
 
-from keras.layers import Layer
+from tensorflow.keras.layers import Layer
+from tensorflow_privacy.privacy.analysis.rdp_accountant import compute_rdp, get_privacy_spent
+
+
+# ===================== PRIVACY ===================== #
+
+
+def compute_epsilon(steps, noise_multiplier, batch_size, input_size, delta):
+  """Computes epsilon value for given hyperparameters."""
+  if noise_multiplier == 0.0:
+    return float('inf')
+  orders = [1 + x / 10. for x in range(1, 100)] + list(range(12, 64))
+  sampling_probability = batch_size / input_size
+  rdp = compute_rdp(q=sampling_probability,
+                    noise_multiplier=noise_multiplier,
+                    steps=steps,
+                    orders=orders)
+  return get_privacy_spent(orders, rdp, target_delta=delta)[0]
 
 
 # ===================== METRICS ===================== #
 
 
-class DecompensationMetrics(keras.callbacks.Callback):
+class DecompensationMetrics(tf.keras.callbacks.Callback):
     def __init__(self, train_data_gen, val_data_gen, deep_supervision,
                  batch_size=32, early_stopping=True, verbose=2):
         super(DecompensationMetrics, self).__init__()
@@ -66,8 +82,10 @@ class DecompensationMetrics(keras.callbacks.Callback):
                 self.model.stop_training = True
 
 
-class InHospitalMortalityMetrics(keras.callbacks.Callback):
-    def __init__(self, train_data, val_data, target_repl, batch_size=32, early_stopping=True, verbose=2):
+class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
+    def __init__(self, train_data, val_data, target_repl, training_size, delta,
+                 batch_size=32, early_stopping=True, verbose=2,
+                 dp=False, noise_multiplier=0.0):
         super(InHospitalMortalityMetrics, self).__init__()
         self.train_data = train_data
         self.val_data = val_data
@@ -77,6 +95,10 @@ class InHospitalMortalityMetrics(keras.callbacks.Callback):
         self.verbose = verbose
         self.train_history = []
         self.val_history = []
+        self.dp = dp
+        self.noise_multiplier = noise_multiplier
+        self.training_size = training_size
+        self.delta = delta
 
     def calc_metrics(self, data, history, dataset, logs):
         y_true = []
@@ -104,6 +126,17 @@ class InHospitalMortalityMetrics(keras.callbacks.Callback):
         history.append(ret)
 
     def on_epoch_end(self, epoch, logs={}):
+        if self.dp:
+            epsilon = compute_epsilon(epoch * self.training_size // self.batch_size,
+                                      self.noise_multiplier,
+                                      self.batch_size,
+                                      self.training_size,
+                                      self.delta)
+            print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
+            logs['epsilon'] = epsilon
+            if epsilon > 10:
+                self.model.stop_training = True
+
         print("\n==>predicting on train")
         self.calc_metrics(self.train_data, self.train_history, 'train', logs)
         print("\n==>predicting on validation")
@@ -116,7 +149,7 @@ class InHospitalMortalityMetrics(keras.callbacks.Callback):
                 self.model.stop_training = True
 
 
-class PhenotypingMetrics(keras.callbacks.Callback):
+class PhenotypingMetrics(tf.keras.callbacks.Callback):
     def __init__(self, train_data_gen, val_data_gen, batch_size=32,
                  early_stopping=True, verbose=2):
         super(PhenotypingMetrics, self).__init__()
@@ -162,7 +195,7 @@ class PhenotypingMetrics(keras.callbacks.Callback):
                 self.model.stop_training = True
 
 
-class LengthOfStayMetrics(keras.callbacks.Callback):
+class LengthOfStayMetrics(tf.keras.callbacks.Callback):
     def __init__(self, train_data_gen, val_data_gen, partition, batch_size=32,
                  early_stopping=True, verbose=2):
         super(LengthOfStayMetrics, self).__init__()
@@ -226,7 +259,7 @@ class LengthOfStayMetrics(keras.callbacks.Callback):
                 self.model.stop_training = True
 
 
-class MultitaskMetrics(keras.callbacks.Callback):
+class MultitaskMetrics(tf.keras.callbacks.Callback):
     def __init__(self, train_data_gen, val_data_gen, partition,
                  batch_size=32, early_stopping=True, verbose=2):
         super(MultitaskMetrics, self).__init__()
