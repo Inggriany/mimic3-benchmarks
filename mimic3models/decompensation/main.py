@@ -15,7 +15,17 @@ from mimic3models import metrics
 from mimic3models import keras_utils
 from mimic3models import common_utils
 
-from keras.callbacks import ModelCheckpoint, CSVLogger
+import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger
+from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras import DPKerasAdamOptimizer
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+  try:
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+  except RuntimeError as e:
+    print(e)
 
 
 parser = argparse.ArgumentParser()
@@ -68,38 +78,49 @@ args_dict = dict(args._get_kwargs())
 args_dict['header'] = discretizer_header
 args_dict['task'] = 'decomp'
 
-
-# Build the model
-print("==> using model {}".format(args.network))
-model_module = imp.load_source(os.path.basename(args.network), args.network)
-model = model_module.Network(**args_dict)
-suffix = "{}.bs{}{}{}.ts{}".format("" if not args.deep_supervision else ".dsup",
-                                   args.batch_size,
-                                   ".L1{}".format(args.l1) if args.l1 > 0 else "",
-                                   ".L2{}".format(args.l2) if args.l2 > 0 else "",
-                                   args.timestep)
-model.final_name = args.prefix + model.say_name() + suffix
-print("==> model.final_name:", model.final_name)
-
-
-# Compile the model
-print("==> compiling the model")
-optimizer_config = {'class_name': args.optimizer,
-                    'config': {'lr': args.lr,
-                               'beta_1': args.beta_1}}
-
-# NOTE: one can use binary_crossentropy even for (B, T, C) shape.
-#       It will calculate binary_crossentropies for each class
-#       and then take the mean over axis=-1. Tre results is (B, T).
-model.compile(optimizer=optimizer_config,
-              loss='binary_crossentropy')
-model.summary()
-
 # Load model weights
 n_trained_chunks = 0
 if args.load_state != "":
-    model.load_weights(args.load_state)
+    model = tf.keras.models.load_model(args.load_state, compile=False if args.dp else True)
     n_trained_chunks = int(re.match(".*chunk([0-9]+).*", args.load_state).group(1))
+else:
+    # Build the model
+    print("==> using model {}".format(args.network))
+    model_module = imp.load_source(os.path.basename(args.network), args.network)
+    model = model_module.Network(**args_dict)
+    suffix = "{}.bs{}{}{}.ts{}{}".format("" if not args.deep_supervision else ".dsup",
+                                       args.batch_size,
+                                       ".L1{}".format(args.l1) if args.l1 > 0 else "",
+                                       ".L2{}".format(args.l2) if args.l2 > 0 else "",
+                                       args.timestep,
+                                       ".dp" if args.dp else "")
+    model.final_name = args.prefix + model.say_name() + suffix
+    print("==> model.final_name:", model.final_name)
+
+
+    # Compile the model
+    print("==> compiling the model")
+    if args.dp:
+        optimizer = DPKerasAdamOptimizer(
+            l2_norm_clip=args.l2_norm_clip,
+            noise_multiplier=args.noise_multiplier,
+            num_microbatches=args.batch_size,
+            learning_rate=args.lr,
+            beta_1=args.beta_1
+        )
+    else:
+        optimizer = tf.keras.optimizers.Adam(beta_1=args.beta_1, learning_rate=args.lr)
+
+    # NOTE: one can use binary_crossentropy even for (B, T, C) shape.
+    #       It will calculate binary_crossentropies for each class
+    #       and then take the mean over axis=-1. Tre results is (B, T).
+    if args.dp:
+        loss = tf.keras.losses.BinaryCrossentropy(reduction=tf.losses.Reduction.NONE)
+    else:
+        loss = 'binary_crossentropy'
+    model.compile(optimizer=optimizer,
+                  loss=loss)
+    model.summary()
 
 # Load data and prepare generators
 if args.deep_supervision:
@@ -127,8 +148,11 @@ if args.mode == 'train':
     metrics_callback = keras_utils.DecompensationMetrics(train_data_gen=train_data_gen,
                                                          val_data_gen=val_data_gen,
                                                          deep_supervision=args.deep_supervision,
+                                                         delta=1e-7,
                                                          batch_size=args.batch_size,
-                                                         verbose=args.verbose)
+                                                         verbose=args.verbose,
+                                                         dp=args.dp,
+                                                         noise_multiplier=args.noise_multiplier)
     # make sure save directory exists
     dirname = os.path.dirname(path)
     if not os.path.exists(dirname):
@@ -149,7 +173,9 @@ if args.mode == 'train':
                         epochs=n_trained_chunks + args.epochs,
                         initial_epoch=n_trained_chunks,
                         callbacks=[metrics_callback, saver, csv_logger],
-                        verbose=args.verbose)
+                        verbose=args.verbose,
+                        use_multiprocessing=False,
+                        workers=1)
 
 elif args.mode == 'test':
 
