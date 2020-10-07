@@ -100,7 +100,7 @@ def add_common_arguments(parser):
     parser.add_argument('--imputation', type=str, default='previous')
     parser.add_argument('--small_part', dest='small_part', action='store_true')
     parser.add_argument('--whole_data', dest='small_part', action='store_false')
-    parser.add_argument('--optimizer', type=str, default='adam')
+    # parser.add_argument('--optimizer', type=str, default='Adam') we will use Adam
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--beta_1', type=float, default=0.9,
                         help='beta_1 param for Adam optimizer')
@@ -109,6 +109,10 @@ def add_common_arguments(parser):
     parser.add_argument('--normalizer_state', type=str, default=None,
                         help='Path to a state file of a normalizer. Leave none if you want to '
                              'use one of the provided ones.')
+    parser.add_argument('--dp', action='store_true', default=False,
+                        help='Train with differential privacy.')
+    parser.add_argument('--l2_norm_clip', type=float, default=0.5, help='l2 norm clip')
+    parser.add_argument('--noise_multiplier', type=float, default=3.0, help='noise multiplier')
     parser.set_defaults(small_part=False)
 
 
