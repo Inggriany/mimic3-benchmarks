@@ -15,13 +15,22 @@ from mimic3models import metrics
 from mimic3models import keras_utils
 from mimic3models import common_utils
 
-from keras.callbacks import ModelCheckpoint, CSVLogger
+import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+  try:
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+  except RuntimeError as e:
+    print(e)
 
 parser = argparse.ArgumentParser()
 common_utils.add_common_arguments(parser)
 parser.add_argument('--target_repl_coef', type=float, default=0.0)
 parser.add_argument('--data', type=str, help='Path to the data of in-hospital mortality task',
-                    default=os.path.join(os.path.dirname(__file__), '../../data/in-hospital-mortality/'))
+                    default=os.path.join(os.path.dirname(__file__), '../../data/in_hospital_mortality/'))
 parser.add_argument('--output_dir', type=str, help='Directory relative which all output files are stored',
                     default='.')
 args = parser.parse_args()
@@ -65,20 +74,29 @@ args_dict['target_repl'] = target_repl
 print("==> using model {}".format(args.network))
 model_module = imp.load_source(os.path.basename(args.network), args.network)
 model = model_module.Network(**args_dict)
-suffix = ".bs{}{}{}.ts{}{}".format(args.batch_size,
+suffix = ".bs{}{}{}.ts{}{}{}".format(args.batch_size,
                                    ".L1{}".format(args.l1) if args.l1 > 0 else "",
                                    ".L2{}".format(args.l2) if args.l2 > 0 else "",
                                    args.timestep,
-                                   ".trc{}".format(args.target_repl_coef) if args.target_repl_coef > 0 else "")
+                                   ".trc{}".format(args.target_repl_coef) if args.target_repl_coef > 0 else "",
+                                   ".dp" if args.dp else "")
 model.final_name = args.prefix + model.say_name() + suffix
 print("==> model.final_name:", model.final_name)
 
 
 # Compile the model
 print("==> compiling the model")
-optimizer_config = {'class_name': args.optimizer,
-                    'config': {'lr': args.lr,
-                               'beta_1': args.beta_1}}
+if args.dp:
+    from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras import DPKerasAdamOptimizer
+    optimizer = DPKerasAdamOptimizer(
+        l2_norm_clip=args.l2_norm_clip,
+        noise_multiplier=args.noise_multiplier,
+        num_microbatches=args.batch_size,
+        learning_rate=args.lr,
+        beta_1=args.beta_1
+    )
+else:
+    optimizer = tf.keras.optimizers.Adam(beta_1=args.beta_1, learning_rate=args.lr)
 
 # NOTE: one can use binary_crossentropy even for (B, T, C) shape.
 #       It will calculate binary_crossentropies for each class
@@ -87,10 +105,13 @@ if target_repl:
     loss = ['binary_crossentropy'] * 2
     loss_weights = [1 - args.target_repl_coef, args.target_repl_coef]
 else:
-    loss = 'binary_crossentropy'
+    if args.dp:
+        loss = tf.keras.losses.BinaryCrossentropy(reduction=tf.losses.Reduction.NONE)
+    else:
+        loss = 'binary_crossentropy'
     loss_weights = None
 
-model.compile(optimizer=optimizer_config,
+model.compile(optimizer=optimizer,
               loss=loss,
               loss_weights=loss_weights)
 model.summary()
@@ -128,8 +149,12 @@ if args.mode == 'train':
     metrics_callback = keras_utils.InHospitalMortalityMetrics(train_data=train_raw,
                                                               val_data=val_raw,
                                                               target_repl=(args.target_repl_coef > 0),
+                                                              training_size=len(train_raw[0]),
+                                                              delta=1e-7,
                                                               batch_size=args.batch_size,
-                                                              verbose=args.verbose)
+                                                              verbose=args.verbose,
+                                                              dp=args.dp,
+                                                              noise_multiplier=args.noise_multiplier)
     # make sure save directory exists
     dirname = os.path.dirname(path)
     if not os.path.exists(dirname):
@@ -143,6 +168,7 @@ if args.mode == 'train':
                            append=True, separator=';')
 
     print("==> training")
+
     model.fit(x=train_raw[0],
               y=train_raw[1],
               validation_data=val_raw,
