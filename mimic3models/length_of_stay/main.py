@@ -15,7 +15,18 @@ from mimic3models import metrics
 from mimic3models import keras_utils
 from mimic3models import common_utils
 
-from keras.callbacks import ModelCheckpoint, CSVLogger
+import tensorflow as tf
+from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger
+from tensorflow_privacy.privacy.optimizers.dp_optimizer_keras import DPKerasAdamOptimizer
+
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
 
 
 parser = argparse.ArgumentParser()
@@ -71,46 +82,55 @@ args_dict['header'] = discretizer_header
 args_dict['task'] = 'los'
 args_dict['num_classes'] = (1 if args.partition == 'none' else 10)
 
-
-# Build the model
-print("==> using model {}".format(args.network))
-model_module = imp.load_source(os.path.basename(args.network), args.network)
-model = model_module.Network(**args_dict)
-suffix = "{}.bs{}{}{}.ts{}.partition={}".format("" if not args.deep_supervision else ".dsup",
-                                                args.batch_size,
-                                                ".L1{}".format(args.l1) if args.l1 > 0 else "",
-                                                ".L2{}".format(args.l2) if args.l2 > 0 else "",
-                                                args.timestep,
-                                                args.partition)
-model.final_name = args.prefix + model.say_name() + suffix
-print("==> model.final_name:", model.final_name)
-
-
-# Compile the model
-print("==> compiling the model")
-optimizer_config = {'class_name': args.optimizer,
-                    'config': {'lr': args.lr,
-                               'beta_1': args.beta_1}}
-
-if args.partition == 'none':
-    # other options are: 'mean_squared_error', 'mean_absolute_percentage_error'
-    loss_function = 'mean_squared_logarithmic_error'
-else:
-    loss_function = 'sparse_categorical_crossentropy'
-# NOTE: categorical_crossentropy needs one-hot vectors
-#       that's why we use sparse_categorical_crossentropy
-# NOTE: it is ok to use keras.losses even for (B, T, D) shapes
-
-model.compile(optimizer=optimizer_config,
-              loss=loss_function)
-model.summary()
-
-
 # Load model weights
 n_trained_chunks = 0
 if args.load_state != "":
-    model.load_weights(args.load_state)
+    model = tf.keras.models.load_model(args.load_state, compile=False if args.dp else True)
     n_trained_chunks = int(re.match(".*chunk([0-9]+).*", args.load_state).group(1))
+else:
+    # Build the model
+    print("==> using model {}".format(args.network))
+    model_module = imp.load_source(os.path.basename(args.network), args.network)
+    model = model_module.Network(**args_dict)
+    suffix = "{}.bs{}{}{}.ts{}{}.partition={}".format("" if not args.deep_supervision else ".dsup",
+                                                    args.batch_size,
+                                                    ".L1{}".format(args.l1) if args.l1 > 0 else "",
+                                                    ".L2{}".format(args.l2) if args.l2 > 0 else "",
+                                                    args.timestep,
+                                                    ".dp" if args.dp else "",
+                                                    args.partition)
+    model.final_name = args.prefix + model.say_name() + suffix
+    print("==> model.final_name:", model.final_name)
+
+
+    # Compile the model
+    print("==> compiling the model")
+    if args.dp:
+        optimizer = DPKerasAdamOptimizer(
+            l2_norm_clip=args.l2_norm_clip,
+            noise_multiplier=args.noise_multiplier,
+            num_microbatches=args.batch_size,
+            learning_rate=args.lr,
+            beta_1=args.beta_1
+        )
+    else:
+        optimizer = tf.keras.optimizers.Adam(beta_1=args.beta_1, learning_rate=args.lr)
+
+    if args.partition == 'none':
+        # other options are: 'mean_squared_error', 'mean_absolute_percentage_error'
+        loss_function = tf.keras.losses.MeanSquaredLogarithmicError(
+            reduction=tf.losses.Reduction.NONE if args.dp else tf.losses.Reduction.AUTO)
+    else:
+        loss_function = tf.keras.losses.SparseCategoricalCrossentropy(
+            reduction=tf.losses.Reduction.NONE if args.dp else tf.losses.Reduction.AUTO
+        )
+    # NOTE: categorical_crossentropy needs one-hot vectors
+    #       that's why we use sparse_categorical_crossentropy
+    # NOTE: it is ok to use keras.losses even for (B, T, D) shapes
+
+    model.compile(optimizer=optimizer,
+                  loss=loss_function)
+    model.summary()
 
 # Load data and prepare generators
 if args.deep_supervision:
@@ -146,9 +166,12 @@ if args.mode == 'train':
 
     metrics_callback = keras_utils.LengthOfStayMetrics(train_data_gen=train_data_gen,
                                                        val_data_gen=val_data_gen,
+                                                       delta=1e-7,
                                                        partition=args.partition,
                                                        batch_size=args.batch_size,
-                                                       verbose=args.verbose)
+                                                       verbose=args.verbose,
+                                                       dp=args.dp,
+                                                       noise_multiplier=args.noise_multiplier)
     # make sure save directory exists
     dirname = os.path.dirname(path)
     if not os.path.exists(dirname):
@@ -162,14 +185,14 @@ if args.mode == 'train':
                            append=True, separator=';')
 
     print("==> training")
-    model.fit_generator(generator=train_data_gen,
-                        steps_per_epoch=train_data_gen.steps,
-                        validation_data=val_data_gen,
-                        validation_steps=val_data_gen.steps,
-                        epochs=n_trained_chunks + args.epochs,
-                        initial_epoch=n_trained_chunks,
-                        callbacks=[metrics_callback, saver, csv_logger],
-                        verbose=args.verbose)
+    model.fit(x=train_data_gen,
+              steps_per_epoch=train_data_gen.steps,
+              validation_data=val_data_gen,
+              validation_steps=val_data_gen.steps,
+              epochs=n_trained_chunks + args.epochs,
+              initial_epoch=n_trained_chunks,
+              callbacks=[metrics_callback, saver, csv_logger],
+              verbose=args.verbose)
 
 elif args.mode == 'test':
     # ensure that the code uses test_reader

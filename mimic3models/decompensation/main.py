@@ -166,16 +166,14 @@ if args.mode == 'train':
                            append=True, separator=';')
 
     print("==> training")
-    model.fit_generator(generator=train_data_gen,
-                        steps_per_epoch=train_data_gen.steps,
-                        validation_data=val_data_gen,
-                        validation_steps=val_data_gen.steps,
-                        epochs=n_trained_chunks + args.epochs,
-                        initial_epoch=n_trained_chunks,
-                        callbacks=[metrics_callback, saver, csv_logger],
-                        verbose=args.verbose,
-                        use_multiprocessing=False,
-                        workers=1)
+    model.fit(x=train_data_gen,
+              steps_per_epoch=train_data_gen.steps,
+              validation_data=val_data_gen,
+              validation_steps=val_data_gen.steps,
+              epochs=n_trained_chunks + args.epochs,
+              initial_epoch=n_trained_chunks,
+              callbacks=[metrics_callback, saver, csv_logger],
+              verbose=args.verbose)
 
 elif args.mode == 'test':
 

@@ -21,7 +21,7 @@ class BatchGen(object):
         self._load_data(reader, discretizer, normalizer, small_part)
 
         self.steps = (len(self.data[0]) + batch_size - 1) // batch_size
-        self.lock = threading.Lock()
+        # self.lock = threading.Lock()
         self.generator = self._generator()
 
     def _load_data(self, reader, discretizer, normalizer, small_part=False):
@@ -91,7 +91,7 @@ class BatchGen(object):
         return self.generator
 
     def next(self):
-        with self.lock:
+        with threading.Lock():
             return next(self.generator)
 
     def __next__(self):

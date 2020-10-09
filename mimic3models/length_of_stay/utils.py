@@ -36,7 +36,7 @@ class BatchGen(object):
             self.steps = steps
 
         self.chunk_size = min(1024, self.steps) * batch_size
-        self.lock = threading.Lock()
+        # self.lock = threading.Lock()
         self.generator = self._generator()
 
     def _generator(self):
@@ -86,7 +86,7 @@ class BatchGen(object):
         return self.generator
 
     def next(self, return_y_true=False):
-        with self.lock:
+        with threading.Lock():
             self.return_y_true = return_y_true
             return next(self.generator)
 
@@ -106,7 +106,7 @@ class BatchGenDeepSupervision(object):
         self._load_per_patient_data(dataloader, discretizer, normalizer)
 
         self.steps = (len(self.data[1]) + batch_size - 1) // batch_size
-        self.lock = threading.Lock()
+        # self.lock = threading.Lock()
         self.generator = self._generator()
 
     def _load_per_patient_data(self, dataloader, discretizer, normalizer):
@@ -220,7 +220,7 @@ class BatchGenDeepSupervision(object):
         return self.generator
 
     def next(self, return_y_true=False):
-        with self.lock:
+        with threading.Lock:
             self.return_y_true = return_y_true
             return next(self.generator)
 

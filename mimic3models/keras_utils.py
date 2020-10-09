@@ -75,10 +75,10 @@ class DecompensationMetrics(tf.keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs={}):
         if self.dp:
-            epsilon = compute_epsilon(epoch * self.train_data.steps,
+            epsilon = compute_epsilon(epoch * self.train_data_gen.steps,
                                       self.noise_multiplier,
                                       self.batch_size,
-                                      self.train_data.steps,
+                                      self.train_data_gen.n_examples,
                                       self.delta)
             print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
             logs['epsilon'] = epsilon
@@ -144,7 +144,7 @@ class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
             epsilon = compute_epsilon(epoch * len(self.train_data[0]) // self.batch_size,
                                       self.noise_multiplier,
                                       self.batch_size,
-                                      self.train_data[0],
+                                      len(self.train_data[0]),
                                       self.delta)
             print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
             logs['epsilon'] = epsilon
@@ -164,8 +164,8 @@ class InHospitalMortalityMetrics(tf.keras.callbacks.Callback):
 
 
 class PhenotypingMetrics(tf.keras.callbacks.Callback):
-    def __init__(self, train_data_gen, val_data_gen, batch_size=32,
-                 early_stopping=True, verbose=2):
+    def __init__(self, train_data_gen, val_data_gen, delta, batch_size=32,
+                 early_stopping=True, verbose=2, dp=False, noise_multiplier=0.0):
         super(PhenotypingMetrics, self).__init__()
         self.train_data_gen = train_data_gen
         self.val_data_gen = val_data_gen
@@ -174,6 +174,9 @@ class PhenotypingMetrics(tf.keras.callbacks.Callback):
         self.verbose = verbose
         self.train_history = []
         self.val_history = []
+        self.delta = delta
+        self.dp = dp
+        self.noise_multiplier = noise_multiplier
 
     def calc_metrics(self, data_gen, history, dataset, logs):
         y_true = []
@@ -197,6 +200,17 @@ class PhenotypingMetrics(tf.keras.callbacks.Callback):
         history.append(ret)
 
     def on_epoch_end(self, epoch, logs={}):
+        if self.dp:
+            epsilon = compute_epsilon(epoch * self.train_data_gen.steps,
+                                      self.noise_multiplier,
+                                      self.batch_size,
+                                      len(self.train_data_gen.data[0]),
+                                      self.delta)
+            print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
+            logs['epsilon'] = epsilon
+            if epsilon > 10:
+                self.model.stop_training = True
+
         print("\n==>predicting on train")
         self.calc_metrics(self.train_data_gen, self.train_history, 'train', logs)
         print("\n==>predicting on validation")
@@ -210,8 +224,8 @@ class PhenotypingMetrics(tf.keras.callbacks.Callback):
 
 
 class LengthOfStayMetrics(tf.keras.callbacks.Callback):
-    def __init__(self, train_data_gen, val_data_gen, partition, batch_size=32,
-                 early_stopping=True, verbose=2):
+    def __init__(self, train_data_gen, val_data_gen, partition, delta, batch_size=32,
+                 early_stopping=True, verbose=2, dp=False, noise_multiplier=0.0):
         super(LengthOfStayMetrics, self).__init__()
         self.train_data_gen = train_data_gen
         self.val_data_gen = val_data_gen
@@ -221,6 +235,9 @@ class LengthOfStayMetrics(tf.keras.callbacks.Callback):
         self.verbose = verbose
         self.train_history = []
         self.val_history = []
+        self.delta = delta
+        self.dp = dp
+        self.noise_multiplier = noise_multiplier
 
     def calc_metrics(self, data_gen, history, dataset, logs):
         y_true = []
@@ -259,7 +276,22 @@ class LengthOfStayMetrics(tf.keras.callbacks.Callback):
             logs[dataset + '_' + k] = v
         history.append(ret)
 
+    def on_epoch_begin(self, epoch, logs=None):
+        self.train_data_gen.return_y_true = False
+        self.val_data_gen.return_y_true = False
+
     def on_epoch_end(self, epoch, logs={}):
+        if self.dp:
+            epsilon = compute_epsilon(epoch * self.train_data_gen.steps,
+                                      self.noise_multiplier,
+                                      self.batch_size,
+                                      self.train_data_gen.steps,
+                                      self.delta)
+            print("\nFor delta={}, the current epsilon is {:.2f}".format(self.delta, epsilon))
+            logs['epsilon'] = epsilon
+            if epsilon > 10:
+                self.model.stop_training = True
+
         print("\n==>predicting on train")
         self.calc_metrics(self.train_data_gen, self.train_history, 'train', logs)
         print("\n==>predicting on validation")
@@ -271,6 +303,8 @@ class LengthOfStayMetrics(tf.keras.callbacks.Callback):
             max_train_kappa = np.max([x["kappa"] for x in self.train_history])
             if max_kappa > 0.38 and cur_kappa < 0.35 and max_train_kappa > 0.47:
                 self.model.stop_training = True
+        self.train_data_gen.return_y_true = False
+        self.val_data_gen.return_y_true = False
 
 
 class MultitaskMetrics(tf.keras.callbacks.Callback):

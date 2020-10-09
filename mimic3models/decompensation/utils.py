@@ -34,7 +34,7 @@ class BatchGen(object):
             self.steps = steps
 
         self.chunk_size = min(1024, self.steps) * batch_size
-        self.lock = threading.Lock()
+        # self.lock = threading.Lock()
         self.generator = self._generator()
 
     def _generator(self):
@@ -71,7 +71,7 @@ class BatchGen(object):
         return self.generator
 
     def next(self):
-        with self.lock:
+        with threading.Lock():
             return next(self.generator)
 
     def __next__(self):
