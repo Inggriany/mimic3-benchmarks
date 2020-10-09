@@ -103,3 +103,5 @@ result/
 
 # Data
 data/
+mimic3models/*/vanilla_lstm
+mimic3models/*/dp_lstm
