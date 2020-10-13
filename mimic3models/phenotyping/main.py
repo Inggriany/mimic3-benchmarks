@@ -74,7 +74,8 @@ args_dict['target_repl'] = target_repl
 n_trained_chunks = 0
 if args.load_state != "":
     model = tf.keras.models.load_model(args.load_state, compile=False if args.dp else True)
-    n_trained_chunks = int(re.match(".*chunk([0-9]+).*", args.load_state).group(1))
+    n_trained_chunks = int(re.match(".*epoch([0-9]+).*", args.load_state).group(1))
+
 else:
     # Build the model
     print("==> using model {}".format(args.network))
@@ -118,13 +119,6 @@ else:
                   loss=loss,
                   loss_weights=loss_weights)
     model.summary()
-
-# Load model weights
-n_trained_chunks = 0
-if args.load_state != "":
-    model.load_weights(args.load_state)
-    n_trained_chunks = int(re.match(".*epoch([0-9]+).*", args.load_state).group(1))
-
 
 # Build data generators
 train_data_gen = utils.BatchGen(train_reader, discretizer,
